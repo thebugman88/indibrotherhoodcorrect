@@ -1,0 +1,72 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "Core user identity and gamification stats.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "points": { "type": "number" },
+        "credits": { "type": "number" },
+        "level": { "type": "number" },
+        "inviteCode": { "type": "string", "description": "Unique code for referrals" },
+        "subscriptionTier": { "type": "string", "enum": ["free", "basic", "supreme", "legacy", "admin"] }
+      }
+    },
+    "TriviaProgress": {
+      "title": "Trivia Progress",
+      "description": "Tracking user cooldowns and scores for trivia categories.",
+      "type": "object",
+      "properties": {
+        "lastPlayed": { "type": "number", "description": "Timestamp in ms" },
+        "lastScore": { "type": "number" },
+        "bestScore": { "type": "number" }
+      }
+    },
+    "InviteRecord": {
+      "title": "Invite Record",
+      "description": "Tracks which users invited whom.",
+      "type": "object",
+      "properties": {
+        "newUserId": { "type": "string" },
+        "claimed": { "type": "boolean" },
+        "timestamp": { "type": "number" }
+      }
+    },
+    "CapturedThreatDNA": {
+      "title": "Captured Threat DNA",
+      "description": "Logs for trap rooms to track connections and IP logic of connected bots and attempts to connect, used for capturing legal royalties.",
+      "type": "object",
+      "properties": {
+         "ip": { "type": "string" },
+         "userAgent": { "type": "string" },
+         "status": { "type": "string" },
+         "navigationPattern": { "type": "string" },
+         "fingerprint": { "type": "object" },
+         "agreementCount": { "type": "number" },
+         "royaltiesAcquired": { "type": "boolean" },
+         "timestamp": { "type": "string" }
+      }
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "Main user documents"
+    },
+    "/users/{userId}/trivia/{catId}": {
+      "schema": "TriviaProgress",
+      "description": "User specific trivia stats"
+    },
+    "/users/{userId}/invites/{inviteId}": {
+      "schema": "InviteRecord",
+      "description": "List of successful invites per user"
+    },
+    "/invite_codes/{code}": {
+      "schema": "{ \"ownerId\": \"string\" }",
+      "description": "Global lookup for invite code ownership"
+    }
+  }
+}

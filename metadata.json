@@ -1,0 +1,6 @@
+{
+  "name": "IndieBrotherhood",
+  "description": "A Dawn of A New Era - Professional tools for indie artists, featuring AI-powered hit analysis, mastering, lyric generation, and the OpenAI-backed Artist Assistant.",
+  "requestFramePermissions": ["microphone", "camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,289 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- PRIMITIVES ---
+    function isSignedIn() { return request.auth != null; }
+    function isVerified() { return isSignedIn() && request.auth.token.email_verified == true; }
+    function isOwner(userId) { return isSignedIn() && request.auth.uid == userId; }
+    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    
+    // Admin Override Node
+    function isAdmin() { 
+      return isSignedIn() && request.auth.token.email != null && (
+        request.auth.token.email == "xchristopherrayx@gmail.com" ||
+        request.auth.token.email == "c.e.o@indiebrotherhood.com"
+      ); 
+    }
+
+    function isSecurelyVerified() {
+      return isVerified() || isAdmin();
+    }
+
+    // RBAC & Multi-Tenancy Primitives
+    function getMembershipId(collectiveId) {
+      return request.auth.uid + "_" + collectiveId;
+    }
+    function getMemberData(collectiveId) {
+      return get(/databases/$(database)/documents/memberships/$(getMembershipId(collectiveId))).data;
+    }
+    function isMember(collectiveId) {
+      return isSignedIn() && exists(/databases/$(database)/documents/memberships/$(getMembershipId(collectiveId)));
+    }
+    function hasRole(collectiveId, roles) {
+      return isMember(collectiveId) && getMemberData(collectiveId).role in roles;
+    }
+
+    // --- VALIDATION BLUEPRINTS ---
+    
+    function isValidUser(data) {
+      return data.uid is string && data.uid.size() <= 128 &&
+             data.email is string && data.email.size() <= 200 &&
+             data.subscriptionTier in ['none', 'free', 'basic', 'legacy', 'supreme', 'admin', 'promo'] &&
+             data.credits is number &&
+             data.points is number &&
+             data.level is number &&
+             data.createdAt is string &&
+             data.termsAccepted is bool &&
+             data.keys().hasAll(['uid', 'email', 'subscriptionTier', 'credits', 'points', 'level', 'createdAt', 'termsAccepted']);
+    }
+
+    function isValidLoungeSong(data) {
+      return data.userId is string && data.userId.size() <= 128 &&
+             data.title is string && data.title.size() <= 150 &&
+             data.link is string && data.link.size() <= 500 &&
+             data.expiresAt is string &&
+             data.keys().hasAll(['userId', 'title', 'link', 'expiresAt']);
+    }
+
+    function isValidTrack(data) {
+      return data.userId is string && data.userId.size() <= 128 &&
+             data.title is string && data.title.size() <= 200 &&
+             data.status in ['pending', 'judged'] &&
+             data.judgeCount is number &&
+             data.createdAt != null &&
+             data.keys().hasAll(['userId', 'title', 'status', 'judgeCount', 'createdAt']);
+    }
+
+    function isValidJudgment(data) {
+      return data.trackId is string && data.trackId.size() <= 128 &&
+             data.judgeId is string && data.judgeId.size() <= 128 &&
+             data.metrics is map &&
+             data.overall is number &&
+             data.createdAt != null;
+    }
+
+    function isValidCollective(data) {
+      return data.name is string && data.name.size() <= 100 &&
+             data.creatorId == request.auth.uid &&
+             data.type in ['label', 'crew', 'collective'] &&
+             data.keys().hasAll(['name', 'creatorId', 'type']);
+    }
+
+    function isValidMember(data) {
+      return data.uid == request.auth.uid &&
+             data.role in ['owner', 'admin', 'moderator', 'member'] &&
+             data.keys().hasAll(['uid', 'role']);
+    }
+
+    // --- COLLECTION RULES ---
+
+    // USERS COLLECTION
+    match /users/{userId} {
+      allow get: if isOwner(userId) || isAdmin(); // Protect user data from scraping
+      allow list: if isAdmin();
+      
+      allow create: if isSignedIn() && isOwner(userId) && isValidUser(incoming());
+      
+      allow update: if isSignedIn() && (
+        isAdmin() || 
+        (isOwner(userId) && (
+          // Standard Update: Name/Terms
+          (incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'termsAccepted', 'lastActive', 'lastStreakDate', 'unlockedSkins', 'promoUsed', 'language', 'subscriptionTier', 'promoExpiry', 'inviteCode', 'pushNotificationsEnabled', 'bio', 'socialLinks', 'idTagSlogan', 'layoutType', 'wallpaperUrl', 'backupEmail', 'registrationIp'])) ||
+          // Gamification: System increments (simplified for rules, ideally via cloud functions, but we handle it via updateDoc)
+          (incoming().diff(existing()).affectedKeys().hasOnly(['points', 'level', 'badges', 'credits', 'judgmentsPerformed', 'masteringCredits', 'analysisCredits'])) ||
+          // Tier Upgrade Update
+          (incoming().diff(existing()).affectedKeys().hasOnly(['subscriptionTier', 'credits', 'termsAccepted', 'promoUsed', 'promoExpiry']))
+        ))
+      );
+
+      // User's Subcollections
+      match /trivia/{triviaId} {
+        allow read, write: if isOwner(userId);
+      }
+
+      match /invites/{inviteId} {
+        allow read: if isOwner(userId);
+        allow create: if isSignedIn();
+      }
+
+      match /notifications/{notifId} {
+        allow read, update, delete: if isOwner(userId);
+        allow create: if isOwner(userId) || isAdmin(); // Allow system or owner to create
+      }
+    }
+
+    // INVITE CODES
+    match /invite_codes/{code} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && incoming().ownerId == request.auth.uid;
+      allow update: if isSignedIn(); // Allow updating uses count or something
+    }
+
+    // PROMO IPS
+    match /promo_fingerprints/{fingerprintId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update, delete: if isAdmin();
+    }
+
+    match /promo_ips/{ipId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+
+    // WHITELIST
+    match /free_tier_whitelist/{emailId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // ADMIN ACCESS LOCKDOWN
+    match /admin/{allPaths=**} {
+      allow read, write: if isAdmin();
+    }
+    match /config/{allPaths=**} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+    
+    // THREAT LOGS
+    match /Captured_Threat_DNA/{logId} {
+      allow create: if true;
+      allow read, update, delete: if isAdmin();
+    }
+    match /Captured_Threat_Logs/{logId} {
+      allow create: if true; // Allows the bots to auto-incriminate themselves via the Trap Room
+      allow read, update, delete: if isAdmin(); 
+    }
+
+    // GLOBAL NOTIFICATIONS
+    match /global_notifications/{notifId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // NOTIFICATIONS (System Broadcasts)
+    match /notifications/{notifId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // SENTINEL LOGS
+    match /sentinel_logs/{logId} {
+      allow read: if isAdmin();
+      allow create: if isVerified(); // Allow nodes to report faults
+      allow update, delete: if isAdmin();
+    }
+    
+    match /sentinel_patches/{patchId} {
+      allow read: if isAdmin();
+      allow write: if isAdmin();
+    }
+
+    // CHAT (LOUNGE)
+    match /lounge/{scene}/messages/{msgId} {
+      allow list: if isSignedIn() && isValidId(scene);
+      allow create: if isSignedIn() && incoming().userId == request.auth.uid && incoming().text.size() <= 500;
+      allow update, delete: if isAdmin();
+    }
+
+    // MEETINGS (Town Hall logic)
+    match /meetings/current {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+    match /meetings/current/messages/{msgId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && incoming().userId == request.auth.uid;
+      allow update, delete: if isAdmin();
+    }
+    match /meetings/current/votes/{voteId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && voteId == request.auth.uid;
+      allow update, delete: if isAdmin();
+    }
+
+    match /lounge_songs/{songId} {
+      allow read: if isSignedIn();
+      allow create: if isVerified() && incoming().userId == request.auth.uid && isValidLoungeSong(incoming());
+      allow update: if isAdmin() || (isVerified() && existing().userId == request.auth.uid);
+      allow delete: if isAdmin() || (isVerified() && existing().userId == request.auth.uid);
+    }
+
+    // SEMANTIC REGISTRY (AI LAB)
+    match /semantic_registry/{docId} {
+      allow read: if isSignedIn();
+      allow create: if isVerified() && incoming().userId == request.auth.uid;
+      allow update, delete: if isAdmin();
+    }
+
+    // K7 POOL SYNDICATE
+    match /k7_contracts/{userId} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn() && userId == request.auth.uid;
+    }
+    match /k7_assets/{assetId} {
+      allow read: if isSignedIn() && exists(/databases/$(database)/documents/k7_contracts/$(request.auth.uid));
+      allow create: if isSignedIn() && incoming().ownerId == request.auth.uid && exists(/databases/$(database)/documents/k7_contracts/$(request.auth.uid));
+      allow update, delete: if isAdmin() || (isSignedIn() && existing().ownerId == request.auth.uid);
+    }
+    match /k7_generated_tracks/{trackId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && incoming().creatorId == request.auth.uid && exists(/databases/$(database)/documents/k7_contracts/$(request.auth.uid));
+      allow update, delete: if isAdmin() || (isSignedIn() && existing().creatorId == request.auth.uid);
+    }
+
+    // TRACKS
+    match /tracks/{trackId} {
+      allow read: if isSignedIn();
+      allow create: if isVerified() && incoming().userId == request.auth.uid && isValidTrack(incoming());
+      
+      allow update: if isVerified() && (
+        isAdmin() ||
+        (existing().userId == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'externalUrl', 'coverArtUrl', 'audioUrl'])) ||
+        // System updates from judgments
+        (incoming().diff(existing()).affectedKeys().hasAll(['judgeCount', 'scores', 'status']))
+      );
+    }
+
+    // JUDGMENTS
+    match /tracks/{trackId}/judgments/{userId} {
+      allow read: if isSignedIn();
+      allow create: if isVerified() && isOwner(userId) && userId != get(/databases/$(database)/documents/tracks/$(trackId)).data.userId && isValidJudgment(incoming());
+      allow update: if isAdmin();
+    }
+
+    // COLLECTIVES (MULTI-TENANCY & RBAC)
+    match /collectives/{collectiveId} {
+      allow list: if isSignedIn();
+      allow get: if isSignedIn() && (!existing().isPrivate || isMember(collectiveId) || isAdmin());
+      allow create: if isVerified() && isValidCollective(incoming());
+      allow update: if hasRole(collectiveId, ['owner', 'admin']) || isAdmin();
+      allow delete: if hasRole(collectiveId, ['owner']) || isAdmin();
+    }
+
+    match /memberships/{membershipId} {
+      allow read: if isSignedIn() && (existing().uid == request.auth.uid || isAdmin());
+      allow create: if isVerified() && incoming().uid == request.auth.uid;
+      allow update, delete: if isAdmin(); // Memberships are handled by service logic (transactions)
+    }
+  }
+}
